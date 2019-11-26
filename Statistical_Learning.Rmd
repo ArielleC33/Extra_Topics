@@ -1,0 +1,216 @@
+---
+title: "Statistica Learning"
+author: "Arielle"
+date: "11/26/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library (tidyverse)
+library (viridis)
+library (gridExtra)
+library(modelr)
+library(mgcv)
+library(patchwork)
+library(glmnet)
+
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+	fig.width = 8, 
+  fig.height = 6,
+  out.width = "90%"
+)
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+set.seed(11)
+```
+
+Lets start with LASSO
+
+```{r}
+bwt_df = 
+  read_csv("./data/extra_topic_data/birthweight.csv") %>% 
+  janitor::clean_names() %>%
+  mutate(
+    babysex = as.factor(babysex),
+    babysex = fct_recode(babysex, "male" = "1", "female" = "2"),
+    frace = as.factor(frace),
+    frace = fct_recode(frace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4", "other" = "8"),
+    malform = as.logical(malform),
+    mrace = as.factor(mrace),
+    mrace = fct_recode(mrace, "white" = "1", "black" = "2", "asian" = "3", 
+                       "puerto rican" = "4")) %>% 
+  sample_n(200)
+```
+
+To use the lasso, we will use glmnet
+
+```{r}
+y = bwt_df$bwt
+
+x = model.matrix(bwt ~ ., bwt_df)[,-1]
+```
+
+```{r}
+lasso_fit = glmnet(x, y)
+```
+
+Make sure you set those lambdas to make sure its the same
+
+```{r}
+lambda = 10^(seq(3, -2, -0.1))
+
+lasso_fit =
+  glmnet(x, y, lambda = lambda)
+
+lasso_cv =
+  cv.glmnet(x, y, lambda = lambda)
+
+lambda_opt = lasso_cv$lambda.min
+```
+
+Still going to use the broom packeage on the lasso fit because it will look better 
+
+```{r}
+broom::tidy(lasso_fit) %>% 
+  select(term, lambda, estimate) %>% 
+  complete(term, lambda, fill = list(estimate = 0) ) 
+```
+
+```{r}
+broom::tidy(lasso_fit) %>% 
+  select(term, lambda, estimate) %>% 
+  complete(term, lambda, fill = list(estimate = 0) ) %>% 
+  filter(term != "(Intercept)") %>% 
+  ggplot(aes(x = log(lambda, 10), y = estimate, group = term, color = term)) + 
+  geom_path() + 
+  geom_vline(xintercept = log(lambda_opt, 10), color = "blue", size = 1.2) +
+  theme(legend.position = "none")
+```
+
+This is the cross validation part 
+
+```{r}
+broom::tidy(lasso_cv) %>% 
+  ggplot(aes(x = log(lambda, 10), y = estimate)) + 
+  geom_point() 
+```
+
+The blue line in the first model is the smallest lamnda will be for the set of predictions thats are present from the second graph. 
+
+
+### CLustering 
+
+```{r}
+poke_df = 
+  read_csv("./data/extra_topic_data/pokemon.csv") %>% 
+  janitor::clean_names() %>% 
+  select(hp, speed)
+```
+
+```{r}
+poke_df %>% 
+  ggplot(aes(x = hp, y = speed)) + 
+  geom_point()
+```
+
+
+We clustersing now 
+
+```{r}
+kmeans_fit =
+  kmeans(x = poke_df, centers = 3)
+```
+
+
+We processing and plotting 
+
+```{r}
+poke_df =
+  broom::augment(kmeans_fit, poke_df)
+
+poke_df %>% 
+  ggplot(aes(x = hp, y = speed, color = .cluster)) +
+  geom_point()
+```
+
+### Clustering Trajectories 
+
+```{r}
+traj_data = 
+  read_csv("./data/extra_topic_data/trajectories.csv")
+
+traj_data %>% 
+  ggplot(aes(x = week, y = value, group = subj)) + 
+  geom_point() + 
+  geom_path()
+```
+
+Now we need to get intercepts and slopes for eveyone 
+```{r}
+int_slope_df = 
+  traj_data %>% 
+  nest(data = week:value) %>% 
+  mutate(
+    models = map(data, ~lm(value ~ week, data = .x)),
+    result = map(models, broom::tidy)
+  ) %>% 
+  select(-data, -models) %>% 
+  unnest(result) %>% 
+  select(subj, term, estimate) %>% 
+  pivot_wider(
+    names_from = term,
+    values_from = estimate
+  ) %>% 
+  rename(int = "(Intercept)", slope = week)
+```
+
+Try to kmeans this but first we gonna plot the intercept and slope
+
+```{r}
+int_slope_df %>% 
+  ggplot(aes(x = int, y = slope)) + 
+  geom_point()
+```
+
+Have to do some processing, because it will treat the sunject as something to be clustered but thats not the case
+
+```{r}
+km_fit = 
+  kmeans(
+    x = int_slope_df %>% 
+      select(-subj) %>% 
+      scale,  centers = 2)
+
+int_slope_df =
+  broom::augment(km_fit, int_slope_df)
+```
+
+We clustered this
+
+```{r}
+int_slope_df %>% 
+  ggplot(aes(x = int, y = slope, color = .cluster)) +
+  geom_point()
+```
+
+We joined the two together
+
+```{r}
+left_join(traj_data, int_slope_df) %>% 
+  ggplot(aes(x = week, y = value, group = subj, color = .cluster)) + 
+  geom_point() + 
+  geom_path() 
+```
+
